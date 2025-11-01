@@ -184,3 +184,115 @@ ORDER BY
 
 
 
+-- Non-optimized, poorly written version with performance issues
+-- (ORIGINAL - DO NOT USE)
+/*
+SELECT DISTINCT
+    -- Scalar subqueries for each row (very inefficient)
+    (SELECT Name FROM SalesLT.ProductCategory WHERE ProductCategoryID = 
+        (SELECT ParentProductCategoryID FROM SalesLT.ProductCategory WHERE ProductCategoryID = p.ProductCategoryID)) AS ParentCategoryName,
+    (SELECT Name FROM SalesLT.ProductCategory WHERE ProductCategoryID = p.ProductCategoryID) AS SubCategoryName,
+    p.Name AS ProductName,
+    CONCAT(c.FirstName, ' ', c.LastName) AS CustomerFullName,
+    -- Redundant subqueries calculating the same thing multiple times
+    (SELECT COUNT(*) FROM SalesLT.SalesOrderDetail sod2 
+     WHERE sod2.ProductID = p.ProductID 
+     AND sod2.SalesOrderID IN (SELECT SalesOrderID FROM SalesLT.SalesOrderHeader WHERE CustomerID = c.CustomerID)) AS Customer_ProductOrderCount,
+    FORMAT((SELECT SUM(LineTotal) FROM SalesLT.SalesOrderDetail sod3 
+            WHERE sod3.ProductID = p.ProductID 
+            AND sod3.SalesOrderID IN (SELECT SalesOrderID FROM SalesLT.SalesOrderHeader WHERE CustomerID = c.CustomerID)), 'C', 'tr-TR') AS Customer_ProductTotalSpend,
+    -- More inefficient subqueries without proper indexing consideration
+    FORMAT((SELECT SUM(ISNULL((SELECT COUNT(*) FROM SalesLT.SalesOrderDetail sod4 
+                               WHERE sod4.ProductID = p.ProductID 
+                               AND sod4.SalesOrderID IN (SELECT SalesOrderID FROM SalesLT.SalesOrderHeader WHERE CustomerID = c2.CustomerID)), 0))
+            FROM SalesLT.Customer c2), 'C', 'tr-TR') AS Product_GrandTotalOrders,
+    FORMAT((SELECT AVG(totals.spend) FROM 
+           (SELECT ISNULL((SELECT SUM(LineTotal) FROM SalesLT.SalesOrderDetail sod5 
+                           WHERE sod5.ProductID = p.ProductID 
+                           AND sod5.SalesOrderID IN (SELECT SalesOrderID FROM SalesLT.SalesOrderHeader WHERE CustomerID = c3.CustomerID)), 0) AS spend
+            FROM SalesLT.Customer c3) totals), 'C', 'tr-TR') AS Product_OverallAverageValue
+FROM 
+    SalesLT.Product p,  -- Old-style comma join (avoid this)
+    SalesLT.Customer c,
+    SalesLT.SalesOrderHeader soh,
+    SalesLT.SalesOrderDetail sod
+WHERE 
+    sod.SalesOrderID = soh.SalesOrderID
+    AND soh.CustomerID = c.CustomerID
+    AND sod.ProductID = p.ProductID
+    -- No indexes utilized properly, Cartesian product risk
+ORDER BY 
+    (SELECT Name FROM SalesLT.ProductCategory WHERE ProductCategoryID = 
+        (SELECT ParentProductCategoryID FROM SalesLT.ProductCategory WHERE ProductCategoryID = p.ProductCategoryID)),
+    (SELECT Name FROM SalesLT.ProductCategory WHERE ProductCategoryID = p.ProductCategoryID),
+    p.Name,
+    CONCAT(c.FirstName, ' ', c.LastName);
+*/
+  
+-- OPTIMIZED VERSION - High Performance with CTEs and Proper Joins
+-- Eliminates all scalar subqueries and uses modern SQL best practices
+WITH CustomerProductMetrics AS (
+    -- Step 1: Pre-calculate all customer-product combinations with metrics
+    -- This single scan replaces multiple correlated subqueries
+    SELECT 
+        pc_parent.Name AS ParentCategoryName,
+        pc_sub.Name AS SubCategoryName,
+        p.Name AS ProductName,
+        p.ProductID,
+        c.CustomerID,
+        CONCAT(c.FirstName, ' ', c.LastName) AS CustomerFullName,
+        COUNT(sod.SalesOrderDetailID) AS Customer_ProductOrderCount,
+        SUM(sod.LineTotal) AS Customer_ProductTotalSpend
+    FROM 
+        SalesLT.SalesOrderDetail sod
+        INNER JOIN SalesLT.SalesOrderHeader soh 
+            ON sod.SalesOrderID = soh.SalesOrderID
+        INNER JOIN SalesLT.Customer c 
+            ON soh.CustomerID = c.CustomerID
+        INNER JOIN SalesLT.Product p 
+            ON sod.ProductID = p.ProductID
+        INNER JOIN SalesLT.ProductCategory pc_sub 
+            ON p.ProductCategoryID = pc_sub.ProductCategoryID
+        LEFT JOIN SalesLT.ProductCategory pc_parent 
+            ON pc_sub.ParentProductCategoryID = pc_parent.ProductCategoryID
+    GROUP BY 
+        pc_parent.Name,
+        pc_sub.Name,
+        p.Name,
+        p.ProductID,
+        c.CustomerID,
+        c.FirstName,
+        c.LastName
+)
+-- Step 2: Use window functions for product-level aggregations
+-- This eliminates the need for additional subqueries or self-joins
+SELECT 
+    ParentCategoryName,
+    SubCategoryName,
+    ProductName,
+    CustomerFullName,
+    Customer_ProductOrderCount,
+    FORMAT(Customer_ProductTotalSpend, 'C', 'tr-TR') AS Customer_ProductTotalSpend,
+    -- Window functions calculate product totals efficiently without re-scanning
+    FORMAT(SUM(Customer_ProductOrderCount) OVER (PARTITION BY ProductID), 'N0') AS Product_GrandTotalOrders,
+    FORMAT(AVG(Customer_ProductTotalSpend) OVER (PARTITION BY ProductID), 'C', 'tr-TR') AS Product_OverallAverageValue
+FROM 
+    CustomerProductMetrics
+ORDER BY 
+    ParentCategoryName,
+    SubCategoryName,
+    ProductName,
+    CustomerFullName;
+
+-- PERFORMANCE IMPROVEMENTS:
+-- ✓ Eliminated all scalar subqueries (massive performance gain)
+-- ✓ Replaced comma joins with explicit INNER/LEFT JOINs
+-- ✓ Used CTEs to calculate metrics once instead of repeatedly
+-- ✓ Applied window functions for aggregations (avoids self-joins)
+-- ✓ Removed redundant DISTINCT (proper GROUP BY eliminates duplicates)
+-- ✓ Category joins happen once in the CTE, not in subqueries
+-- ✓ All calculations reference pre-computed values
+-- ✓ Query optimizer can effectively use indexes with modern join syntax
+
+
+
