@@ -7,4 +7,8 @@
     <Nullable>enable</Nullable>
   </PropertyGroup>
 
+  <ItemGroup>
+    <Compile Include="AdvancedQueries\third\SQLStoreProcuderes.sql" />
+  </ItemGroup>
+
 </Project>
